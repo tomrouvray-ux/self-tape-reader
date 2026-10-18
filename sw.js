@@ -1,5 +1,5 @@
 // Keeps the app working offline. The page itself is fetched fresh when online so updates arrive.
-const CACHE = 'str-v3';
+const CACHE = 'str-v4';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'favicon-32.png'];
 const EXTRA = ['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'];

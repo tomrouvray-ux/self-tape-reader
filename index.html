@@ -119,6 +119,8 @@ select { background: var(--surface); border: 1px solid var(--line); border-radiu
 /* Run bar */
 .runbar { position: sticky; top: var(--top-h, 61px); z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px;
   background: var(--bg); padding: 8px 0; }
+.mic { font-size: 12px; color: var(--muted); }
+.mic.err { color: var(--warn); font-weight: 600; }
 .status { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 99px; background: var(--surface); border: 1px solid var(--line); font-weight: 500; font-size: 14px; }
 .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .status.reader .dot { background: var(--reader); } .status.you .dot { background: var(--you); } .status.warn .dot { background: var(--warn); }
@@ -237,6 +239,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
             <button id="modeLearn" aria-pressed="false">Learn lines</button>
           </div>
           <span class="status" id="status"><span class="dot"></span><span id="statusText">Ready</span></span>
+          <span class="mic" id="mic" hidden></span>
         </div>
         <div class="page" id="page"></div>
       </div>
@@ -644,6 +647,16 @@ function prefetch(from) {
   }
 }
 const player = new Audio();
+player.setAttribute('playsinline', '');
+// iPhone only lets a page play sound after a tap. Play silence on the Start tap so later lines are allowed.
+const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
+let audioUnlocked = false;
+function unlockAudio() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  try { player.src = SILENT; player.play().catch(() => {}); } catch (e) {}
+  try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } catch (e) {}
+}
 function setEngine(e) {
   settings.engine = e; persist();
   $('engBrowser').setAttribute('aria-pressed', e === 'browser'); $('engEleven').setAttribute('aria-pressed', e === 'eleven');
@@ -708,7 +721,11 @@ function speakText(text, character, done, prev) {
       player.src = player._url; player.volume = settings.volume; player.playbackRate = settings.rate;
       player.onended = () => { if (mine === playToken) done(); };
       player.onerror = () => { if (mine === playToken) done(); };
-      player.play().catch(() => { if (mine === playToken) done(); });
+      player.play().catch(err => {
+        if (mine !== playToken) return;
+        if (err && err.name === 'NotAllowedError' && run.active) { showBanner('Your phone blocked the reader\'s audio. Tap Start to carry on.'); pause(); }
+        else done();
+      });
     }).catch(err => {
       if (mine !== playToken) return;
       showBanner('ElevenLabs could not make this line (' + err.message + '). Using the browser voice for now.');
@@ -731,6 +748,12 @@ function browserSpeak(text, character, done) {
     return u;
   });
   liveUtterances.forEach(u => speechSynthesis.speak(u));
+  if (IOS && liveUtterances.length) {
+    // If iPhone silently refuses to speak, say so instead of hanging.
+    let started = false; liveUtterances[0].onstart = () => { started = true; };
+    const tok = run.token;
+    setTimeout(() => { if (!started && run.active && tok === run.token && run.phase === 'reader') { showBanner('The reader voice did not start. Tap Start to carry on.'); pause(); } }, 4000);
+  }
 }
 
 // ---------- Recognition ----------
@@ -751,7 +774,9 @@ function ensureRec() {
     rec._len = e.results.length; rec._firstLive = firstLive; recWorked = true;
     if (run.phase === 'you') { lastResultAt = performance.now(); onHeard(); }
   };
+  rec.onstart = () => micState('Mic on');
   rec.onerror = e => {
+    if (e.error !== 'no-speech' && e.error !== 'aborted') micState('Mic error: ' + e.error, true);
     if ((e.error === 'not-allowed' || e.error === 'service-not-allowed') && IOS && recWorked) {
       // iOS sometimes refuses a restart that did not come from a tap. Ask for one rather than giving up.
       recWanted = false;
@@ -764,6 +789,7 @@ function ensureRec() {
     }
   };
   rec.onend = () => {
+    micState(recWanted ? 'Mic restarting' : 'Mic off');
     recOn = false;
     if (run.phase === 'you') priorHeard = heardText();
     sessionText = []; baseIdx = 0; rec._len = 0; rec._firstLive = null;
@@ -781,6 +807,7 @@ function freshRec() {
   rec = null; recOn = false; sessionText = []; baseIdx = 0;
   ensureRec();
 }
+function micState(text, err) { const m = $('mic'); m.hidden = !SR; m.textContent = text; m.classList.toggle('err', !!err); }
 function stopRec() { recWanted = false; if (rec && recOn) { try { rec.abort(); } catch (e) {} } }
 function markLineStart() {
   // Ignore anything already final (usually the reader's own voice through the speakers).
@@ -814,6 +841,7 @@ function haltOutput() {
 }
 
 function start() {
+  unlockAudio();
   if (!script.me) { showView('script'); return; }
   if (run.idx >= script.blocks.length) { run.idx = firstPlayable(0); run.results = {}; }
   run.active = true;
@@ -848,7 +876,9 @@ function step() {
   if (b.character === script.me) { listen(b, tok); return; }
   // Reader line
   setPhase('reader', 'Reader: ' + b.character);
-  if (SR && !micBlocked) { if (IOS) stopRec(); else startRec(); }
+  // On iPhone the microphone must be fully off before the reader can be heard, so allow it a moment.
+  let gap = settings.cueGap;
+  if (SR && !micBlocked) { if (IOS) { if (recOn) gap = Math.max(gap, 0.5); stopRec(); } else startRec(); }
   const at = run.idx;
   run.timer = setTimeout(() => {
     if (tok !== run.token) return;
@@ -856,7 +886,7 @@ function step() {
       if (tok !== run.token || !run.active) return;
       run.idx++; step();
     }, prevText(at));
-  }, settings.cueGap * 1000);
+  }, gap * 1000);
 }
 
 function listen(b, tok) {
@@ -868,7 +898,7 @@ function listen(b, tok) {
     return;
   }
   setPhase('you', 'Listening for you');
-  if (IOS) { freshRec(); startRec(); }
+  if (IOS) setTimeout(() => { if (tok === run.token && run.phase === 'you') { freshRec(); startRec(); } }, 300);
   run.timer = setInterval(() => {
     if (tok !== run.token) return;
     const now = performance.now();
