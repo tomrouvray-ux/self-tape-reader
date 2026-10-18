@@ -44,7 +44,7 @@ button { cursor: pointer; }
 a { color: var(--accent); }
 
 .top { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
-  padding: 10px max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
+  padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
   display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
 .brand { font-weight: 700; letter-spacing: .01em; display: flex; align-items: center; gap: 8px; }
 .tally { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); transition: background .2s; }
@@ -67,7 +67,7 @@ main { padding: 20px max(16px, env(safe-area-inset-right, 0px)) 40px max(16px, e
 
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
 .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
-.side { display: flex; flex-direction: column; gap: 16px; position: sticky; top: 76px; }
+.side { display: flex; flex-direction: column; gap: 16px; position: sticky; top: calc(var(--top-h, 61px) + 15px); }
 @media (max-width: 900px) { .side { position: static; } }
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .field label, .lbl { font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
@@ -99,8 +99,25 @@ select { background: var(--surface); border: 1px solid var(--line); border-radiu
 .heard { display: block; max-width: 36ch; margin: 8px auto 0; font-family: var(--font-ui); font-size: 13px; color: var(--muted); min-height: 1.4em; }
 .score { font-family: var(--font-ui); font-size: 12px; font-weight: 600; margin-left: 6px; padding: 1px 7px; border-radius: 99px; background: var(--bg); color: var(--muted); vertical-align: middle; }
 
+/* Thumb controls for phones and tablets */
+.dock { display: none; }
+@media (max-width: 700px), (pointer: coarse) {
+  .runbar .desk { display: none; }
+  .scriptname, #themeBtn { display: none; }
+  .dock:not([hidden]) { display: grid; grid-template-columns: 1fr 1.6fr 1fr; gap: 10px; position: fixed; left: 0; right: 0; bottom: 0; z-index: 6;
+    background: var(--bg); border-top: 1px solid var(--line);
+    padding: 10px max(16px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+  .dock button { min-height: 58px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); font-weight: 600; font-size: 16px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+  .dock button:active { transform: scale(.97); }
+  .dock .play { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-size: 18px; }
+  .dock svg { width: 22px; height: 22px; }
+  #view-run { padding-bottom: calc(100px + env(safe-area-inset-bottom, 0px)); }
+  .page { padding-bottom: 40vh; }
+}
+
 /* Run bar */
-.runbar { position: sticky; top: 61px; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px;
+.runbar { position: sticky; top: var(--top-h, 61px); z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px;
   background: var(--bg); padding: 8px 0; }
 .status { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 99px; background: var(--surface); border: 1px solid var(--line); font-weight: 500; font-size: 14px; }
 .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
@@ -212,9 +229,9 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
       <div style="min-width:0">
         <div class="banner" id="banner" hidden></div>
         <div class="runbar">
-          <button class="btn primary" id="playBtn">Start</button>
-          <button class="btn" id="backBtn" title="Previous line">Back</button>
-          <button class="btn" id="nextBtn" title="Skip to next line">Next</button>
+          <button class="btn primary desk" id="playBtn">Start</button>
+          <button class="btn desk" id="backBtn" title="Previous line">Back</button>
+          <button class="btn desk" id="nextBtn" title="Skip to next line">Next</button>
           <div class="seg" role="group" aria-label="Mode">
             <button id="modeTape" aria-pressed="true">Tape</button>
             <button id="modeLearn" aria-pressed="false">Learn lines</button>
@@ -236,7 +253,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
           <div class="field"><label for="threshold">Words needed to move on <output id="thresholdOut"></output></label><input type="range" id="threshold" min="0.3" max="1" step="0.05"></div>
           <label class="check"><input type="checkbox" id="showMine"> Show my lines in Tape mode</label>
           <label class="check"><input type="checkbox" id="showHeard"> Show what it hears</label>
-          <p class="hint">It waits until it has heard the last words of your line, so you can take a beat mid-speech. If you change the ending or it mishears, it comes in after 6 seconds of silence, or press → to cue it yourself.</p>
+          <p class="hint">It waits until it has heard the last words of your line, so you can take a beat mid-speech. If you change the ending or it mishears, it comes in after 6 seconds of silence, or press → (Next) to cue it yourself.</p>
         </div>
         <div class="panel">
           <h2>Keys</h2>
@@ -246,6 +263,12 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
     </div>
   </section>
 </main>
+
+<nav class="dock" id="dock" aria-label="Rehearsal controls">
+  <button id="dBack" aria-label="Back one line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>Back</button>
+  <button id="dPlay" class="play"><svg id="dPlayIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z"/></svg><span id="dPlayText">Start</span></button>
+  <button id="dNext" aria-label="Next line"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>Next</button>
+</nav>
 
 <div class="modal" id="pasteModal" hidden>
   <div class="panel">
@@ -767,7 +790,9 @@ function setPhase(p, text) {
   st.className = 'status ' + (p === 'reader' ? 'reader' : p === 'you' ? 'you' : p === 'warn' ? 'warn' : '');
   $('statusText').textContent = text;
   $('tally').className = 'tally ' + (p === 'reader' ? 'reader' : p === 'you' ? 'you' : '');
-  $('playBtn').textContent = run.active ? 'Pause' : (run.idx > firstPlayable(0) && run.idx < script.blocks.length ? 'Resume' : 'Start');
+  const label = run.active ? 'Pause' : (run.idx > firstPlayable(0) && run.idx < script.blocks.length ? 'Resume' : 'Start');
+  $('playBtn').textContent = label; $('dPlayText').textContent = label;
+  $('dPlayIcon').innerHTML = run.active ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>' : '<path d="M7 5v14l12-7z"/>';
 }
 
 function haltOutput() {
@@ -1051,7 +1076,7 @@ $('pasteOk').onclick = () => {
 
 // ---------- Controls ----------
 function showView(v) {
-  $('view-script').hidden = v !== 'script'; $('view-run').hidden = v !== 'run';
+  $('view-script').hidden = v !== 'script'; $('view-run').hidden = v !== 'run'; $('dock').hidden = v !== 'run';
   $('tab-script').setAttribute('aria-selected', v === 'script'); $('tab-run').setAttribute('aria-selected', v === 'run');
   if (v === 'script' && run.active) pause();
   if (v === 'run') renderPage();
@@ -1063,6 +1088,13 @@ $('tab-run').onclick = () => showView('run');
 $('playBtn').onclick = () => run.active ? pause() : start();
 $('nextBtn').onclick = next;
 $('backBtn').onclick = () => goTo(prevPlayable(run.idx));
+$('dPlay').onclick = () => run.active ? pause() : start();
+$('dNext').onclick = () => next();
+$('dBack').onclick = () => goTo(prevPlayable(run.idx));
+// Keep sticky bars below the header whatever height it wraps to.
+const topBar = document.querySelector('.top');
+const setTopH = () => document.documentElement.style.setProperty('--top-h', topBar.offsetHeight + 'px');
+setTopH(); if (window.ResizeObserver) new ResizeObserver(setTopH).observe(topBar);
 function next() {
   if (run.phase === 'you' && run.active) { const b = script.blocks[run.idx]; completeMine(b, words(heardText()), words(b.text)); return; }
   goTo(run.idx + 1);
