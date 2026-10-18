@@ -44,7 +44,7 @@ button { cursor: pointer; }
 a { color: var(--accent); }
 
 .top { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line);
-  padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
+  padding: calc(10px + var(--sat, env(safe-area-inset-top, 0px))) max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
   display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
 .brand { font-weight: 700; letter-spacing: .01em; display: flex; align-items: center; gap: 8px; }
 .tally { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); transition: background .2s; }
@@ -735,21 +735,28 @@ function browserSpeak(text, character, done) {
 
 // ---------- Recognition ----------
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, recOn = false, recWanted = false, sessionText = [], priorHeard = '', baseIdx = 0, lastResultAt = 0, micBlocked = false;
+// iPhone and iPad: recognition stops hearing after the first phrase and is cut off by audio playback,
+// so there it is stopped while the reader speaks and started fresh for each of your lines.
+const IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+let rec = null, recOn = false, recWanted = false, sessionText = [], priorHeard = '', baseIdx = 0, lastResultAt = 0, micBlocked = false, recWorked = false, lastRecStart = 0;
 function ensureRec() {
   if (rec || !SR) return;
   rec = new SR();
-  rec.lang = 'en-GB'; rec.continuous = true; rec.interimResults = true; rec.maxAlternatives = 1;
+  rec.lang = 'en-GB'; rec.continuous = !IOS; rec.interimResults = true; rec.maxAlternatives = 1;
   rec.onresult = e => {
     let firstLive = null;
     for (let i = 0; i < e.results.length; i++) if (!e.results[i].isFinal && firstLive === null) firstLive = i;
     sessionText = [];
     for (let i = baseIdx; i < e.results.length; i++) sessionText.push(e.results[i][0].transcript);
-    rec._len = e.results.length; rec._firstLive = firstLive;
+    rec._len = e.results.length; rec._firstLive = firstLive; recWorked = true;
     if (run.phase === 'you') { lastResultAt = performance.now(); onHeard(); }
   };
   rec.onerror = e => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+    if ((e.error === 'not-allowed' || e.error === 'service-not-allowed') && IOS && recWorked) {
+      // iOS sometimes refuses a restart that did not come from a tap. Ask for one rather than giving up.
+      recWanted = false;
+      if (run.phase === 'you') $('statusText').textContent = 'Tap Next when done, or Pause and Resume to listen again';
+    } else if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       micBlocked = true; recWanted = false;
       showBanner('Microphone access was refused, so the reader cannot hear you. Allow the microphone for this page in the address bar, then reload. Until then, press → after each of your lines.');
     } else if (e.error === 'network') {
@@ -767,7 +774,12 @@ function startRec() {
   if (!SR || micBlocked) return;
   ensureRec(); recWanted = true;
   if (recOn) return;
-  try { rec.start(); recOn = true; } catch (e) { /* already starting; onend restarts */ }
+  try { rec.start(); recOn = true; lastRecStart = performance.now(); } catch (e) { /* already starting; onend restarts */ }
+}
+function freshRec() {
+  if (rec) { rec.onend = rec.onresult = rec.onerror = null; try { rec.abort(); } catch (e) {} }
+  rec = null; recOn = false; sessionText = []; baseIdx = 0;
+  ensureRec();
 }
 function stopRec() { recWanted = false; if (rec && recOn) { try { rec.abort(); } catch (e) {} } }
 function markLineStart() {
@@ -805,7 +817,7 @@ function start() {
   if (!script.me) { showView('script'); return; }
   if (run.idx >= script.blocks.length) { run.idx = firstPlayable(0); run.results = {}; }
   run.active = true;
-  if (SR && !micBlocked) startRec();
+  if (SR && !micBlocked && !IOS) startRec();
   try { navigator.wakeLock && navigator.wakeLock.request('screen').then(l => wakeLock = l).catch(() => {}); } catch (e) {}
   step();
 }
@@ -836,7 +848,7 @@ function step() {
   if (b.character === script.me) { listen(b, tok); return; }
   // Reader line
   setPhase('reader', 'Reader: ' + b.character);
-  if (SR && !micBlocked) startRec();
+  if (SR && !micBlocked) { if (IOS) stopRec(); else startRec(); }
   const at = run.idx;
   run.timer = setTimeout(() => {
     if (tok !== run.token) return;
@@ -856,9 +868,12 @@ function listen(b, tok) {
     return;
   }
   setPhase('you', 'Listening for you');
+  if (IOS) { freshRec(); startRec(); }
   run.timer = setInterval(() => {
     if (tok !== run.token) return;
     const now = performance.now();
+    // Watchdog: if the session dropped without restarting, start it again.
+    if (recWanted && !recOn && now - lastRecStart > 800) startRec();
     const heard = words(heardText());
     const res = align(expected, heard), coverage = res.coverage;
     const silence = lastResultAt ? (now - lastResultAt) / 1000 : 0;
@@ -1093,6 +1108,18 @@ $('dNext').onclick = () => next();
 $('dBack').onclick = () => goTo(prevPlayable(run.idx));
 // Keep sticky bars below the header whatever height it wraps to.
 const topBar = document.querySelector('.top');
+// Home-screen app on iPhone: the status bar overlays the page. If the phone reports no safe area, leave room anyway.
+(function () {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top,0px);visibility:hidden';
+  document.body.appendChild(probe);
+  const fix = () => {
+    const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+    const portrait = innerHeight > innerWidth;
+    document.documentElement.style.setProperty('--sat', IOS && standalone && portrait && probe.offsetHeight < 20 ? '47px' : 'env(safe-area-inset-top, 0px)');
+  };
+  fix(); addEventListener('resize', fix);
+})();
 const setTopH = () => document.documentElement.style.setProperty('--top-h', topBar.offsetHeight + 'px');
 setTopH(); if (window.ResizeObserver) new ResizeObserver(setTopH).observe(topBar);
 function next() {
