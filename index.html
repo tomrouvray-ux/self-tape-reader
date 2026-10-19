@@ -89,6 +89,11 @@ select { background: var(--surface); border: 1px solid var(--line); border-radiu
 .blk.action { color: var(--muted); font-size: 15px; }
 .blk.action.heading { font-weight: 700; text-transform: uppercase; color: var(--ink); }
 .blk.mine .who { color: var(--you); font-weight: 700; }
+.blk.flagged { box-shadow: inset 4px 0 0 var(--miss); }
+.blk.flagged .who { color: var(--miss); }
+.flag { font-family: var(--font-ui); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin-left: 6px; padding: 1px 7px; border-radius: 99px; background: var(--miss); color: var(--surface); vertical-align: middle; }
+.peek { color: var(--you); }
+.blk.line { -webkit-user-select: none; user-select: none; }
 .blk.theirs .who { color: var(--reader); }
 .paren { font-style: italic; color: var(--muted); }
 .running .blk { opacity: .38; }
@@ -265,7 +270,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
         </div>
         <div class="panel">
           <h2>Keys</h2>
-          <p class="keys"><kbd>Space</kbd> start or pause &nbsp; <kbd>→</kbd> next &nbsp; <kbd>←</kbd> back<br>Click any line to start from there. A presentation clicker works for next and back.</p>
+          <p class="keys"><kbd>Space</kbd> start or pause &nbsp; <kbd>→</kbd> next &nbsp; <kbd>←</kbd> back<br>Click any line to start from there. A presentation clicker works for next and back.<br>In Learn lines, tap one of your lines to see it, and double-tap any line to flag it red.</p>
         </div>
       </aside>
     </div>
@@ -864,7 +869,7 @@ function stripEcho(h, echo) {
 function heardWords() { return stripEcho(words(heardText()), run.echo); }
 
 // ---------- Run engine ----------
-const run = { idx: firstPlayable(0), active: false, phase: 'idle', token: 0, results: {}, hintLevel: 0, lineStartAt: 0, timer: null, lastHintAt: 0 };
+const run = { idx: firstPlayable(0), active: false, phase: 'idle', token: 0, results: {}, revealed: {}, hintLevel: 0, lineStartAt: 0, timer: null, lastHintAt: 0 };
 let wakeLock = null;
 
 function firstPrevLine(i) { for (let k = i - 1; k >= 0; k--) if (script.blocks[k].type === 'line') return k; return -1; }
@@ -910,6 +915,7 @@ function goTo(i) {
   if (run.idx < script.blocks.length) run.idx = firstPlayable(run.idx);
   // Going back clears marks from this line onwards, so earlier attempts don't give lines away.
   for (const k of Object.keys(run.results)) if (+k >= run.idx) delete run.results[k];
+  for (const k of Object.keys(run.revealed)) if (+k >= run.idx) delete run.revealed[k];
   renderPage();
   if (wasActive) step(); else setPhase('idle', run.idx >= script.blocks.length ? 'End of scene' : 'Ready');
 }
@@ -981,7 +987,7 @@ function onHeard() { if (settings.showHeard || settings.mode === 'learn') render
 function completeMine(b, heard, expected) {
   clearInterval(run.timer); run.timer = null;
   const res = align(expected, heard || heardWords());
-  run.results[run.idx] = { ops: res.ops, coverage: res.coverage, prompted: run.hintLevel > 0 };
+  run.results[run.idx] = { ops: res.ops, coverage: res.coverage, prompted: run.hintLevel > 0 || !!run.revealed[run.idx] };
   run.idx++;
   step();
 }
@@ -1002,6 +1008,8 @@ function lineHTML(b, i) {
   const r = run.results[i];
   if (mine && r && settings.mode === 'learn') {
     body = `<span class="txt">${diffHTML(b, r)}</span>`;
+  } else if (mine && settings.mode === 'learn' && run.revealed[i]) {
+    body = `<span class="txt peek">${t}</span>`;
   } else if (mine && settings.mode === 'learn') {
     body = `<span class="txt">${hiddenHTML(b, i)}</span>`;
   } else if (mine && !settings.showMine) {
@@ -1009,7 +1017,8 @@ function lineHTML(b, i) {
   }
   if (mine && i === run.idx && run.phase === 'you' && settings.showHeard) body += `<span class="heard" id="heard">${esc(heardWords().join(' '))}</span>`;
   const score = mine && r && settings.mode === 'learn' ? `<span class="score">${r.coverage >= 0.999 && !r.ops.some(o => o.kind === 'extra') ? 'word perfect' : Math.round(r.coverage * 100) + '%'}</span>` : '';
-  return `<div class="blk line ${mine ? 'mine' : 'theirs'}" data-i="${i}"><span class="who">${esc(b.character)}${score}</span>${body}</div>`;
+  const flag = b.flag ? '<span class="flag">Flagged</span>' : '';
+  return `<div class="blk line ${mine ? 'mine' : 'theirs'}${b.flag ? ' flagged' : ''}" data-i="${i}"><span class="who">${esc(b.character)}${score}${flag}</span>${body}</div>`;
 }
 function hiddenHTML(b, i) {
   const ws = spoken(b.text).split(/\s+/).filter(Boolean);
@@ -1042,7 +1051,7 @@ function renderPage() {
   page.classList.toggle('running', run.active || run.idx > firstPlayable(0));
   let html = `<p class="hint" style="margin:0 0 18px">${esc(script.title || 'Untitled')}${script.example ? '<span class="example">Example</span>' : ''}${script.me ? ` · You are <b style="color:var(--you)">${esc(script.me)}</b>` : ''}</p>`;
   html += script.blocks.map(lineHTML).join('');
-  if (run.idx >= script.blocks.length && settings.mode === 'learn' && Object.keys(run.results).length) html += summaryHTML();
+  if (run.idx >= script.blocks.length && settings.mode === 'learn' && (Object.keys(run.results).length || script.blocks.some(b => b.flag))) html += summaryHTML();
   page.innerHTML = html;
   markCurrent();
 }
@@ -1060,17 +1069,40 @@ function markCurrent(scroll = true) {
 }
 function summaryHTML() {
   const mine = Object.entries(run.results);
-  const perfect = mine.filter(([, r]) => r.coverage >= 0.999 && !r.ops.some(o => o.kind === 'extra')).length;
-  const off = mine.filter(([, r]) => !(r.coverage >= 0.999 && !r.ops.some(o => o.kind === 'extra')));
+  const clean = r => r.coverage >= 0.999 && !r.ops.some(o => o.kind === 'extra');
+  const perfect = mine.filter(([i, r]) => clean(r) && !run.revealed[i]).length;
+  const off = mine.filter(([i, r]) => !clean(r) || run.revealed[i]);
+  const flagged = script.blocks.map((b, i) => [b, i]).filter(([b]) => b.flag);
+  const item = (i, note) => `<li data-cue="${i}">${esc(spoken(script.blocks[i].text).slice(0, 70))}… ${note}</li>`;
   return `<div class="panel summary" style="margin-top:28px;font-family:var(--font-ui)"><h2>Run complete</h2>
-    <p style="margin:0 0 8px">${perfect} of ${mine.length} lines word perfect.${off.length ? ' Lines to work on:' : ''}</p>
-    <ul style="margin:0;padding-left:18px">${off.map(([i, r]) => `<li data-i="${i}">${esc(spoken(script.blocks[i].text).slice(0, 70))}… <span class="score">${Math.round(r.coverage * 100)}%</span></li>`).join('')}</ul>
-    <p class="hint" style="margin-top:10px">Struck-through words were missed, italic words were added. Click a line to run from there.</p></div>`;
+    ${mine.length ? `<p style="margin:0 0 8px">${perfect} of ${mine.length} lines word perfect without looking.${off.length ? ' Lines to work on:' : ''}</p>
+    <ul style="margin:0 0 12px;padding-left:18px">${off.map(([i, r]) => item(i, run.revealed[i] ? '<span class="score">looked</span>' : `<span class="score">${Math.round(r.coverage * 100)}%</span>`)).join('')}</ul>` : ''}
+    ${flagged.length ? `<p style="margin:0 0 8px;color:var(--miss);font-weight:600">Flagged lines to return to:</p>
+    <ul style="margin:0;padding-left:18px">${flagged.map(([, i]) => item(i, '')).join('')}</ul>` : ''}
+    <p class="hint" style="margin-top:10px">Struck-through words were missed, italic words were added. Click a line to run it from its cue.</p></div>`;
 }
 
+// Learn lines: tap one of your lines to see it, double-tap any line to flag it red.
+// Taps are told apart by timing so it works the same with a mouse and on a phone.
+let tapTimer = null, tapIdx = null;
 $('page').addEventListener('click', e => {
+  const cue = e.target.closest('[data-cue]');
+  if (cue) { const i = +cue.dataset.cue, c = firstPrevLine(i); goTo(c >= 0 ? c : i); return; }
   const el = e.target.closest('[data-i]'); if (!el) return;
-  goTo(+el.dataset.i);
+  const i = +el.dataset.i, b = script.blocks[i];
+  if (b.type !== 'line') { goTo(i); return; }
+  if (tapTimer && tapIdx === i) {
+    clearTimeout(tapTimer); tapTimer = null;
+    b.flag = !b.flag; persist(); renderPage(); return;
+  }
+  clearTimeout(tapTimer); tapIdx = i;
+  tapTimer = setTimeout(() => {
+    tapTimer = null;
+    if (settings.mode === 'learn' && b.character === script.me) {
+      if (run.revealed[i]) delete run.revealed[i]; else run.revealed[i] = true;
+      if (i === run.idx) renderCurrent(); else renderPage();
+    } else goTo(i);
+  }, 280);
 });
 
 function showBanner(msg) { const b = $('banner'); b.textContent = msg; b.hidden = !msg; }
@@ -1219,7 +1251,7 @@ function next() {
 }
 $('resetBtn').onclick = () => {
   if (run.active) pause();
-  run.results = {}; run.hintLevel = 0;
+  run.results = {}; run.revealed = {}; run.hintLevel = 0;
   goTo(firstPlayable(0));
   setPhase('idle', 'Reset. Ready to start');
 };
