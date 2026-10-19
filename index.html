@@ -188,7 +188,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
             <span class="hint">The text is read in this browser. Nothing is uploaded.</span>
             <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
               <label class="btn primary" for="pdfInput">Choose PDF</label>
-              <input type="file" id="pdfInput" accept="application/pdf,.pdf" hidden>
+              <input type="file" id="pdfInput" accept="application/pdf,.pdf,application/json,.json" hidden>
               <button class="btn" id="pasteBtn">Paste text instead</button>
             </div>
             <span class="hint" id="importMsg"></span>
@@ -202,6 +202,8 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
             <button class="btn small" id="addLine">Add line</button>
             <button class="btn small" id="addDir">Add stage direction</button>
             <span class="spacer"></span>
+            <button class="btn small" id="sendCopy" title="Copy this script so you can paste it into the app on your iPhone or another computer">Copy for another device</button>
+            <button class="btn small" id="sendFile" title="Save this script as a file you can AirDrop or put in iCloud Drive">Save as file</button>
             <button class="btn primary" id="goRehearse">Rehearse</button>
           </div>
         </div>
@@ -286,7 +288,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
 <div class="modal" id="pasteModal" hidden>
   <div class="panel">
     <h2>Paste the scene</h2>
-    <p class="hint" style="margin-bottom:8px">Use <b>NAME: line</b> on each line, or screenplay layout with the name in capitals above each speech.</p>
+    <p class="hint" style="margin-bottom:8px">Use <b>NAME: line</b> on each line, or screenplay layout with the name in capitals above each speech. A script copied from another device can be pasted here too.</p>
     <textarea id="pasteText" placeholder="LOU: Thanks for offering me the position.&#10;JOE: Take a few days to think about it."></textarea>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
       <button class="btn" id="pasteCancel">Cancel</button>
@@ -1177,6 +1179,51 @@ function useBlocks(blocks, title) {
   $('importMsg').textContent = `Found ${blocks.filter(b => b.type === 'line').length} lines for ${chars.length} characters. Check the list below and pick your character.`;
 }
 
+// ---------- Moving a script between devices ----------
+// Each device keeps its own scripts, so a script travels as a small block of text (clipboard or .json file).
+function sharedText() {
+  const { id, title, blocks, me } = script;
+  return JSON.stringify({ app: 'self-tape-reader', v: 1, script: { id, title, blocks, me } });
+}
+function importShared(text) {
+  text = (text || '').trim();
+  if (text[0] !== '{') return false;
+  let d; try { d = JSON.parse(text); } catch (e) { return false; }
+  if (!d || d.app !== 'self-tape-reader' || !d.script || !Array.isArray(d.script.blocks)) return false;
+  const s = d.script;
+  if (run.active) pause();
+  script = { id: s.id || 's' + Date.now(), title: s.title || 'Untitled', blocks: s.blocks, me: s.me || null };
+  // Sending the same script again replaces the old copy rather than adding a second one.
+  recent = recent.filter(x => x.id !== script.id);
+  recent.unshift(script);
+  run.results = {}; run.idx = firstPlayable(0);
+  assignVoices(); assignEl(); persist(); renderEditor(); renderVoices(); renderPage();
+  $('importMsg').textContent = `Added "${script.title}" from your other device.`;
+  setPhase('idle', 'Ready. Press Start or Space');
+  return true;
+}
+$('sendCopy').onclick = async () => {
+  if (script.example) { $('importMsg').textContent = 'Import your own script first.'; return; }
+  const text = sharedText();
+  try {
+    await navigator.clipboard.writeText(text);
+    $('sendCopy').textContent = 'Copied';
+    setTimeout(() => { $('sendCopy').textContent = 'Copy for another device'; }, 2500);
+    $('importMsg').textContent = 'Copied. On the other device open the app, tap Paste text instead, paste and tap Use this text.';
+    $('drop').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } catch (e) {
+    $('pasteText').value = text; $('pasteModal').hidden = false; $('pasteText').select();
+  }
+};
+$('sendFile').onclick = () => {
+  if (script.example) { $('importMsg').textContent = 'Import your own script first.'; return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([sharedText()], { type: 'application/json' }));
+  a.download = (script.title || 'script').replace(/[^\w .-]+/g, '').trim() + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
 async function importPDF(file) {
   const msg = $('importMsg');
   if (!window.pdfjsLib) { msg.textContent = 'The PDF reader did not load. Check your internet connection and reload.'; return; }
@@ -1199,14 +1246,17 @@ async function importPDF(file) {
     msg.textContent = 'Could not read that PDF (' + (err.message || err) + '). Try Paste text instead.';
   }
 }
-$('pdfInput').addEventListener('change', e => { const f = e.target.files[0]; if (f) importPDF(f); e.target.value = ''; });
+const isJSONFile = f => /json$/i.test(f.type) || /\.json$/i.test(f.name);
+function importFile(f) { if (isJSONFile(f)) f.text().then(t => { if (!importShared(t)) $('importMsg').textContent = 'That file is not a Self-Tape Reader script.'; }); else importPDF(f); }
+$('pdfInput').addEventListener('change', e => { const f = e.target.files[0]; if (f) importFile(f); e.target.value = ''; });
 const drop = $('drop');
 ['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
 ['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', e => { const f = [...e.dataTransfer.files].find(f => /pdf$/i.test(f.type) || /\.pdf$/i.test(f.name)); if (f) importPDF(f); });
+drop.addEventListener('drop', e => { const f = [...e.dataTransfer.files].find(f => /pdf$/i.test(f.type) || /\.pdf$/i.test(f.name) || isJSONFile(f)); if (f) importFile(f); });
 $('pasteBtn').onclick = () => { $('pasteModal').hidden = false; $('pasteText').focus(); };
 $('pasteCancel').onclick = () => { $('pasteModal').hidden = true; };
 $('pasteOk').onclick = () => {
+  if (importShared($('pasteText').value)) { $('pasteModal').hidden = true; return; }
   const blocks = parsePlainText($('pasteText').value);
   $('pasteModal').hidden = true;
   if (blocks.length) useBlocks(blocks, 'Pasted scene');
