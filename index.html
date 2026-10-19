@@ -138,6 +138,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
 .drop strong { font-size: 16px; }
 .row { display: grid; grid-template-columns: 150px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 6px 0; border-bottom: 1px solid var(--line); }
 @media (max-width: 560px) { .row { grid-template-columns: minmax(0, 1fr) auto; } .row textarea { grid-column: 1 / -1; grid-row: 2; } }
+.row-tools { display: flex; gap: 6px; }
 .row textarea { width: 100%; resize: vertical; min-height: 38px; border: 1px solid transparent; border-radius: 6px; padding: 6px 8px; background: transparent; font-family: var(--font-script); font-size: 15px; line-height: 1.4; }
 .row textarea:hover, .row textarea:focus { border-color: var(--line); background: var(--bg); }
 .row.action textarea { color: var(--muted); }
@@ -187,7 +188,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
         </div>
         <div class="panel">
           <h2>Check the lines</h2>
-          <p class="hint" style="margin-bottom:10px">Fix any line that landed with the wrong character, or edit the words. Stage directions are shown but never read aloud.</p>
+          <p class="hint" style="margin-bottom:10px">Fix any line that landed with the wrong character, or edit the words. Use + to add a missed line below, and ✕ to delete one. Stage directions are shown but never read aloud.</p>
           <div id="rows"></div>
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
             <button class="btn small" id="addLine">Add line</button>
@@ -1036,7 +1037,8 @@ function renderEditor() {
   $('rows').innerHTML = script.blocks.map((b, i) => `<div class="row ${b.type === 'action' ? 'action' : ''} ${b.character && b.character === script.me ? 'mine' : ''}">
     <select data-i="${i}" aria-label="Who says line ${i + 1}">${opts(b.type === 'line' ? b.character : null)}</select>
     <textarea data-i="${i}" rows="${Math.max(1, Math.ceil(b.text.length / 70))}" aria-label="Text of line ${i + 1}">${esc(b.text)}</textarea>
-    <button class="btn small" data-del="${i}" aria-label="Delete line ${i + 1}">✕</button></div>`).join('');
+    <div class="row-tools"><button class="btn small" data-ins="${i}" title="Add a line below" aria-label="Add a line below line ${i + 1}">+</button>
+    <button class="btn small" data-del="${i}" title="Delete this line" aria-label="Delete line ${i + 1}">✕</button></div></div>`).join('');
 }
 $('chips').addEventListener('click', e => {
   const c = e.target.closest('[data-c]'); if (!c) return;
@@ -1066,9 +1068,19 @@ $('rows').addEventListener('input', e => {
   const b = script.blocks[+e.target.dataset.i]; if (b) { b.text = e.target.value; persist(); }
 });
 $('rows').addEventListener('click', e => {
-  const d = e.target.dataset.del; if (d == null) return;
-  script.blocks.splice(+d, 1); persist(); renderEditor(); renderPage();
+  const d = e.target.dataset.del, ins = e.target.dataset.ins;
+  if (d != null) { script.blocks.splice(+d, 1); afterEdit(); return; }
+  if (ins == null) return;
+  // A missing line is usually the other person's reply, so default to whoever isn't speaking here.
+  const i = +ins, cur = script.blocks[i], nxt = script.blocks[i + 1];
+  const curChar = cur && cur.type === 'line' ? cur.character : null;
+  let c = nxt && nxt.type === 'line' && nxt.character !== curChar ? nxt.character : characters().find(x => x !== curChar);
+  c = c || curChar || script.me || 'READER';
+  script.blocks.splice(i + 1, 0, { type: 'line', character: c, text: '' });
+  afterEdit();
+  const ta = $('rows').querySelector(`textarea[data-i="${i + 1}"]`); if (ta) ta.focus();
 });
+function afterEdit() { run.results = {}; if (run.idx > script.blocks.length) run.idx = firstPlayable(0); persist(); renderEditor(); renderPage(); }
 $('addLine').onclick = () => { const c = characters().find(x => x !== script.me) || script.me || 'READER'; script.blocks.push({ type: 'line', character: c, text: '' }); persist(); renderEditor(); };
 $('addDir').onclick = () => { script.blocks.push({ type: 'action', text: '' }); persist(); renderEditor(); };
 $('goRehearse').onclick = () => showView('run');
