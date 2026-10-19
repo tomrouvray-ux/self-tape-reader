@@ -53,6 +53,8 @@ a { color: var(--accent); }
 .tabs button { border: 0; background: none; padding: 6px 12px; border-radius: 6px; font-weight: 500; color: var(--muted); }
 .tabs button[aria-selected="true"] { background: var(--ink); color: var(--bg); }
 .spacer { flex: 1; }
+.picker { max-width: 28ch; font-size: 13px; }
+@media (max-width: 700px) { .picker:not([hidden]) { max-width: 100%; flex: 1 1 100%; order: 3; } }
 .scriptname { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
 
 .btn { border: 1px solid var(--line); background: var(--surface); padding: 7px 12px; border-radius: 8px; font-weight: 500; }
@@ -165,6 +167,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
     <button role="tab" id="tab-run" aria-selected="true">2 Rehearse</button>
   </div>
   <span class="scriptname" id="scriptname"></span>
+  <select id="scriptPick" class="picker" aria-label="Switch script" hidden></select>
   <span class="spacer"></span>
   <button class="btn small" id="themeBtn" title="Switch light or dark">Light / dark</button>
 </header>
@@ -235,6 +238,7 @@ kbd { font-family: var(--font-ui); font-size: 11px; border: 1px solid var(--line
           <button class="btn primary desk" id="playBtn">Start</button>
           <button class="btn desk" id="backBtn" title="Previous line">Back</button>
           <button class="btn desk" id="nextBtn" title="Skip to next line">Next</button>
+          <button class="btn" id="resetBtn" title="Clear this run's marks and go back to the first line">Reset</button>
           <div class="seg" role="group" aria-label="Mode">
             <button id="modeTape" aria-pressed="true">Tape</button>
             <button id="modeLearn" aria-pressed="false">Learn lines</button>
@@ -498,6 +502,10 @@ function load(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.p
 function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 
 let script = load('str.script', null) || structuredClone(EXAMPLE);
+// Up to 3 imported scripts are kept so you can switch between jobs. The most recently used comes first.
+if (!script.id && !script.example) script.id = 's' + Date.now();
+let recent = load('str.recent', null) || (script.example ? [] : [script]);
+{ const i = recent.findIndex(s => s.id === script.id); if (i >= 0) recent[i] = script; }
 let settings = Object.assign({}, DEFAULTS, load('str.settings', {}));
 if (settings.v !== 2) { settings.endPause = Math.max(1, settings.endPause); settings.v = 2; }
 const $ = id => document.getElementById(id);
@@ -508,7 +516,33 @@ function characters() {
   for (const b of script.blocks) if (b.type === 'line' && b.character) seen.set(b.character, (seen.get(b.character) || 0) + 1);
   return [...seen.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
 }
-function persist() { save('str.script', script); save('str.settings', settings); }
+function persist() {
+  if (!script.example) {
+    const i = recent.findIndex(s => s.id === script.id);
+    if (i >= 0) recent[i] = script; else recent.unshift(script);
+    recent = recent.slice(0, 3);
+    save('str.recent', recent);
+  }
+  save('str.script', script); save('str.settings', settings);
+  renderPicker();
+}
+function renderPicker() {
+  const sel = $('scriptPick'); if (!sel) return;
+  const list = script.example ? [script, ...recent] : recent;
+  sel.innerHTML = list.map(s => `<option value="${esc(s.id || 'example')}"${s === script ? ' selected' : ''}>${esc(s.title || 'Untitled')}</option>`).join('');
+  sel.hidden = list.length < 2;
+  $('scriptname').hidden = !sel.hidden;
+  $('scriptname').textContent = script.title || '';
+}
+function switchScript(id) {
+  const s = recent.find(x => x.id === id); if (!s || s === script) return;
+  if (run.active) pause();
+  script = s;
+  recent = [s, ...recent.filter(x => x !== s)];
+  run.results = {}; run.idx = firstPlayable(0);
+  assignVoices(); assignEl(); persist(); renderEditor(); renderVoices(); renderPage();
+  setPhase('idle', 'Ready. Press Start or Space');
+}
 
 // ---------- Voices ----------
 const NOVELTY = /Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Deranged|Hysterical|Pipe Organ|Junior|Ralph|Fred|Kathy|Princess|Grandma|Grandpa|Rocko|Shelley|Flo|Eddy|Reed|Sandy/i;
@@ -812,15 +846,28 @@ function micState(text, err) { const m = $('mic'); m.hidden = !SR; m.textContent
 function stopRec() { recWanted = false; if (rec && recOn) { try { rec.abort(); } catch (e) {} } }
 function markLineStart() {
   // Ignore anything already final (usually the reader's own voice through the speakers).
-  baseIdx = rec && rec._firstLive != null ? rec._firstLive : (rec && rec._len) || 0;
+  baseIdx = (rec && rec._len) || 0;
   sessionText = []; priorHeard = '';
 }
 function heardText() { return (priorHeard + ' ' + sessionText.join(' ')).trim(); }
+// The mic can catch the end of the reader's line through the speakers. Drop any opening words
+// that repeat the last words the reader said, so they don't count as part of your line.
+function stripEcho(h, echo) {
+  if (!echo || !echo.length) return h;
+  for (let k = Math.min(h.length, echo.length, 15); k >= 2; k--) {
+    let ok = true;
+    for (let j = 0; j < k && ok; j++) ok = h[j] === echo[echo.length - k + j];
+    if (ok) return h.slice(k);
+  }
+  return h;
+}
+function heardWords() { return stripEcho(words(heardText()), run.echo); }
 
 // ---------- Run engine ----------
 const run = { idx: firstPlayable(0), active: false, phase: 'idle', token: 0, results: {}, hintLevel: 0, lineStartAt: 0, timer: null, lastHintAt: 0 };
 let wakeLock = null;
 
+function firstPrevLine(i) { for (let k = i - 1; k >= 0; k--) if (script.blocks[k].type === 'line') return k; return -1; }
 function firstPlayable(i) { while (i < script.blocks.length && script.blocks[i].type !== 'line') i++; return i; }
 function prevPlayable(i) { i--; while (i > 0 && script.blocks[i].type !== 'line') i--; return Math.max(0, firstPlayable(Math.max(0, i))); }
 
@@ -861,7 +908,8 @@ function goTo(i) {
   haltOutput();
   run.idx = Math.max(0, Math.min(i, script.blocks.length));
   if (run.idx < script.blocks.length) run.idx = firstPlayable(run.idx);
-  delete run.results[run.idx];
+  // Going back clears marks from this line onwards, so earlier attempts don't give lines away.
+  for (const k of Object.keys(run.results)) if (+k >= run.idx) delete run.results[k];
   renderPage();
   if (wasActive) step(); else setPhase('idle', run.idx >= script.blocks.length ? 'End of scene' : 'Ready');
 }
@@ -899,13 +947,15 @@ function listen(b, tok) {
     return;
   }
   setPhase('you', 'Listening for you');
+  const prev = script.blocks[firstPrevLine(run.idx)];
+  run.echo = prev && prev.character !== script.me ? words(prev.text) : null;
   if (IOS) setTimeout(() => { if (tok === run.token && run.phase === 'you') { freshRec(); startRec(); } }, 300);
   run.timer = setInterval(() => {
     if (tok !== run.token) return;
     const now = performance.now();
     // Watchdog: if the session dropped without restarting, start it again.
     if (recWanted && !recOn && now - lastRecStart > 800) startRec();
-    const heard = words(heardText());
+    const heard = heardWords();
     const res = align(expected, heard), coverage = res.coverage;
     const silence = lastResultAt ? (now - lastResultAt) / 1000 : 0;
     const ep = settings.endPause, n = expected.length;
@@ -930,7 +980,7 @@ function onHeard() { if (settings.showHeard || settings.mode === 'learn') render
 
 function completeMine(b, heard, expected) {
   clearInterval(run.timer); run.timer = null;
-  const res = align(expected, heard || words(heardText()));
+  const res = align(expected, heard || heardWords());
   run.results[run.idx] = { ops: res.ops, coverage: res.coverage, prompted: run.hintLevel > 0 };
   run.idx++;
   step();
@@ -957,7 +1007,7 @@ function lineHTML(b, i) {
   } else if (mine && !settings.showMine) {
     body = `<span class="txt"><span class="hidden-line">Your line</span></span>`;
   }
-  if (mine && i === run.idx && run.phase === 'you' && settings.showHeard) body += `<span class="heard" id="heard">${esc(heardText())}</span>`;
+  if (mine && i === run.idx && run.phase === 'you' && settings.showHeard) body += `<span class="heard" id="heard">${esc(heardWords().join(' '))}</span>`;
   const score = mine && r && settings.mode === 'learn' ? `<span class="score">${r.coverage >= 0.999 && !r.ops.some(o => o.kind === 'extra') ? 'word perfect' : Math.round(r.coverage * 100) + '%'}</span>` : '';
   return `<div class="blk line ${mine ? 'mine' : 'theirs'}" data-i="${i}"><span class="who">${esc(b.character)}${score}</span>${body}</div>`;
 }
@@ -966,7 +1016,7 @@ function hiddenHTML(b, i) {
   if (i !== run.idx || run.phase !== 'you') return `<span class="hidden-line">Your line · ${ws.length} word${ws.length === 1 ? '' : 's'}</span>`;
   // Show what has been said so far plus hint words.
   const expected = words(b.text);
-  const res = align(expected, words(heardText()));
+  const res = align(expected, heardWords());
   let reached = 0;
   for (const o of res.ops) if (o.kind === 'ok') reached = o.ei + 1;
   const show = Math.min(ws.length, reached + (run.hintLevel ? run.hintLevel * 2 - 1 : 0));
@@ -1028,7 +1078,7 @@ function showBanner(msg) { const b = $('banner'); b.textContent = msg; b.hidden 
 // ---------- Script editor ----------
 function renderEditor() {
   const chars = characters();
-  $('scriptname').textContent = script.title || '';
+  renderPicker();
   $('chips').innerHTML = chars.map(c => {
     const n = script.blocks.filter(b => b.character === c).length;
     return `<button class="chip" data-c="${esc(c)}" aria-pressed="${c === script.me}">${esc(c)}<small>${n}</small></button>`;
@@ -1086,11 +1136,10 @@ $('addDir').onclick = () => { script.blocks.push({ type: 'action', text: '' }); 
 $('goRehearse').onclick = () => showView('run');
 
 function useBlocks(blocks, title) {
-  script = { title, blocks, me: null };
+  script = { id: 's' + Date.now(), title, blocks, me: null };
   const chars = characters();
   // Guess: the character with the most lines is usually the one being taped.
   script.me = chars[0] || null;
-  settings.voices = {}; settings.elVoices = {};
   run.results = {}; run.idx = firstPlayable(0);
   assignVoices(); assignEl(); persist(); renderEditor(); renderVoices(); renderPage();
   $('importMsg').textContent = `Found ${blocks.filter(b => b.type === 'line').length} lines for ${chars.length} characters. Check the list below and pick your character.`;
@@ -1165,9 +1214,15 @@ const topBar = document.querySelector('.top');
 const setTopH = () => document.documentElement.style.setProperty('--top-h', topBar.offsetHeight + 'px');
 setTopH(); if (window.ResizeObserver) new ResizeObserver(setTopH).observe(topBar);
 function next() {
-  if (run.phase === 'you' && run.active) { const b = script.blocks[run.idx]; completeMine(b, words(heardText()), words(b.text)); return; }
+  if (run.phase === 'you' && run.active) { const b = script.blocks[run.idx]; completeMine(b, heardWords(), words(b.text)); return; }
   goTo(run.idx + 1);
 }
+$('resetBtn').onclick = () => {
+  if (run.active) pause();
+  run.results = {}; run.hintLevel = 0;
+  goTo(firstPlayable(0));
+  setPhase('idle', 'Reset. Ready to start');
+};
 function setMode(m) {
   settings.mode = m; persist();
   $('modeTape').setAttribute('aria-pressed', m === 'tape'); $('modeLearn').setAttribute('aria-pressed', m === 'learn');
@@ -1200,6 +1255,7 @@ const th = load('str.theme', null); if (th) document.documentElement.dataset.the
 if (!SR) showBanner('This browser cannot listen for your lines. Open this page in Google Chrome for automatic cueing. Here you can still press → after each of your lines.');
 if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
 setMode(settings.mode);
+$('scriptPick').addEventListener('change', e => switchScript(e.target.value));
 renderEditor();
 setEngine(settings.engine);
 showView(load('str.view', 'run'));
